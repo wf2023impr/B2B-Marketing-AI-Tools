@@ -1,26 +1,32 @@
 # B2B Marketing AI Tools
 
-B2B 营销实用工具集 — AI 赋能的脚本与应用程序。
+AI-powered tools for B2B marketers. Download the `.exe`, double-click, done.
 
-## 定位
+## Tools
 
-面向 B2B 业务场景的工具箱，包含数据采集、处理、分析等实用工具。可以是 Python 脚本、CLI 工具或打包的桌面应用。
+| Tool | Description | Download | Status |
+|------|-------------|----------|--------|
+| [Cold Email Writer](cold-email-writer/) | Generate personalized cold emails in 3 styles | [Download .exe](https://github.com/wf2023impr/B2B-Marketing-AI-Tools/releases) | v1.0 |
+| Company Researcher | Auto-research any company from its website | — | Planned |
+| LinkedIn Post Generator | Turn one article into 5 LinkedIn posts | — | Planned |
+| ICP Matcher | Score and rank prospect lists against your ICP | — | Planned |
 
-## 工具列表
+## How It Works
 
-| 工具 | 说明 | 状态 |
-|------|------|------|
-| *(待添加)* | | |
+1. Download the `.exe` from [Releases](https://github.com/wf2023impr/B2B-Marketing-AI-Tools/releases)
+2. Double-click to run — a browser tab opens automatically
+3. No installation, no command line, no Python needed
 
-## 技术栈
+## For Developers
 
-- Python 3.9+
-- AI/LLM 集成（按需）
+Each tool is in its own directory with `app.py`, `requirements.txt`, and `build.py`.
 
-## 使用
-
-每个工具在独立子目录下，含各自的 README 和依赖说明。
+```bash
+cd cold-email-writer
+pip install -r requirements.txt
+python app.py
+```
 
 ## License
 
-Private
+MIT
