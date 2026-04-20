@@ -4,89 +4,54 @@
 """
 
 import os
+import io
 import re
 import time
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import streamlit as st
 from openai import OpenAI
 
-SYSTEM_PROMPT = """你是一个专业的客服对话分析师。请严格按要求分析以下聊天内容。
+API_KEY = "sk-0f718d37ab5947c0ab087c628c8c3a09"
+BASE_URL = "https://api.deepseek.com"
+MODEL = "deepseek-chat"
 
-分析维度：
+SYSTEM_PROMPT = """你是戴尔客服对话分析师。分析聊天内容，输出严格固定14个字段的JSON。
 
-一、基础信息提取：
-- 会话时间：从对话中提取
-- 客户名：咨询客户的名称
-- 员工名：接待人员的名称
-- 是否为企业购买：是/否/不确定
-- 是否为个人购买：是/否/不确定
+判断依据：
+- 客户选"1"=个人购买，选"2"=企业购买，选"3"=个人购买（外星人）
+- 如果对话提到公司、单位、批量采购=企业购买
+- 如果只是个人咨询电脑=个人购买
+- 采购意向：客户明确要买/问价格/要报价=高；在犹豫对比=中；只是随便问问/售后问题=低；完全无购买意图=无
+- 预算：对话中提到的具体金额或价格范围，没提到填none
+- 采购时间：对话中提到的时间计划，如"这两天""下周""月底前"，没提到填none
+- 需求产品：具体产品型号如"灵越16Pro""R450"，或类型如"游戏本""服务器"，没提到填none
+- 客户顾虑：客户表达的担忧，如价格贵、质量问题、售后、配置不够等，没有填none
+- 销售方案：员工给出的建议/推荐/报价/解决办法，没有填none
 
-二、对话分析：
-- 聊天大意：用一句话概括对话内容
-- 采购意向：高/中/低/无
-- 预算：从对话中提取，没有则填none
-- 采购时间：从对话中提取，没有则填none
-- 需求产品：从对话中提取具体产品型号或类型
-- 客户顾虑：价格/质量/售后/配置/其他/none
-- 销售方案：员工提出的解决方案概括
-- 客户情绪：只能填以下之一：积极有意向/犹豫/冷淡/不耐烦/质疑/无明显情绪
-- 员工态度：只能填以下之一：专业耐心/热情主动/敷衍/急躁/无明显表现
-
-三、问卷映射（根据对话内容判断，没有信息填none）：
-
-1. 采购时间计划？
-A. 1个月内  B. 1-3个月  C. 3-6个月  D. 暂无计划
-
-2. 计划采购的主要产品类型？（可多选，用+连接）
-A. 台式电脑/笔记本  B. 服务器及存储设备  C. CPU、内存、硬盘等核心配件  D. 显示器、键鼠、网络设备等外设  E. 其他
-
-3. 采购的核心用途？
-A. 个人日常办公/娱乐  B. 企业日常办公  C. 服务器运维、数据存储  D. 设计、编程、游戏等高性能需求  E. 其他
-
-4. 采购时最看重的因素？
-A. 产品质量与性能  B. 价格性价比  C. 售后服务与技术支持  D. 供货速度与库存  E. 品牌口碑
-
-5. 预算区间？
-A. 5000元以内  B. 5000-10000元  C. 10000-30000元  D. 30000元以上  E. 暂未确定
-
-6. 更倾向通过哪种渠道了解产品信息？
-A. 门店实地体验  B. 线上产品详情/官网  C. 销售一对一介绍  D. 行业评测/朋友推荐
-
-请严格以JSON格式输出，字段如下：
-{
-  "会话时间": "",
-  "客户名": "",
-  "员工名": "",
-  "是否为企业购买": "",
-  "是否为个人购买": "",
-  "聊天大意": "",
-  "采购意向": "",
-  "预算": "",
-  "采购时间": "",
-  "需求产品": "",
-  "客户顾虑": "",
-  "销售方案": "",
-  "客户情绪": "",
-  "员工态度": "",
-  "Q1_采购时间计划": "",
-  "Q2_产品类型": "",
-  "Q3_核心用途": "",
-  "Q4_看重因素": "",
-  "Q5_预算区间": "",
-  "Q6_信息渠道": ""
-}
+输出JSON格式（严格14个字段，不多不少）：
+{"会话时间":"","客户名":"","员工名":"","是否为企业购买":"","是否为个人购买":"","聊天大意":"","采购意向":"","预算":"","采购时间":"","需求产品":"","客户顾虑":"","销售方案":"","客户情绪":"","员工态度":""}
 
 规则：
 1. 客户情绪只能填：积极有意向/犹豫/冷淡/不耐烦/质疑/无明显情绪
 2. 员工态度只能填：专业耐心/热情主动/敷衍/急躁/无明显表现
-3. 问卷题只填选项字母（如A、B+C），没有信息填none
-4. 空值一律填none
-5. 只输出JSON，不要任何多余解释
+3. 是否为企业购买、是否为个人购买只能填：是/否/不确定
+4. 采购意向只能填：高/中/低/无
+5. 空值一律填none
+6. 聊天大意用一句话概括，不超过30字
+7. 只输出一个JSON对象，不要标题、解释、markdown
 """
 
+OUTPUT_COLUMNS = [
+    '会话时间', '客户名', '员工名', '是否为企业购买', '是否为个人购买',
+    '聊天大意', '采购意向', '预算', '采购时间', '需求产品',
+    '客户顾虑', '销售方案', '客户情绪', '员工态度',
+]
 
-def analyze_conversation(client, model, conversation_text, customer_name, staff_name, session_time):
+
+def analyze_conversation(client, conversation_text, customer_name, staff_name, session_time):
     """调用DeepSeek分析单个对话"""
     user_msg = f"""请分析以下客服对话：
 
@@ -99,7 +64,7 @@ def analyze_conversation(client, model, conversation_text, customer_name, staff_
 """
     try:
         response = client.chat.completions.create(
-            model=model,
+            model=MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
@@ -108,7 +73,6 @@ def analyze_conversation(client, model, conversation_text, customer_name, staff_
             max_tokens=1000,
         )
         content = response.choices[0].message.content.strip()
-        # Extract JSON from response
         json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
         if json_match:
             return json.loads(json_match.group())
@@ -119,56 +83,77 @@ def analyze_conversation(client, model, conversation_text, customer_name, staff_
         return {"error": str(e)}
 
 
-def process_session_file(client, model, df, progress_bar=None, status_text=None):
-    """处理会话级Excel文件（每行一个完整对话）"""
-    results = []
+def process_session_file(client, df, progress_bar, status_text):
+    """处理会话级Excel文件 — 10线程并发，带错误处理和限流重试"""
     total = len(df)
+    results = [None] * total
+    done_count = [0]
+    error_count = [0]
+    lock = threading.Lock()
 
-    for idx, row in df.iterrows():
+    def do_one(idx, row):
         customer = str(row.get('咨询客户', '')).split('@')[0].strip()
         staff = str(row.get('接待人员', ''))
         session_time = str(row.get('接待时间', ''))
         conversation = str(row.get('有效对话', '') or row.get('会话内容', ''))
 
         if not conversation or conversation == 'nan' or len(conversation.strip()) < 10:
-            results.append({"会话时间": session_time, "客户名": customer, "员工名": staff, "error": "对话内容过短"})
-            continue
+            return idx, {"会话时间": session_time, "客户名": customer, "员工名": staff, "error": "对话内容过短"}
 
-        # Truncate very long conversations
         if len(conversation) > 4000:
             conversation = conversation[:4000] + "\n...(对话过长已截断)"
 
-        if status_text:
-            status_text.text(f"正在分析 {idx + 1}/{total}: {customer}")
-        if progress_bar:
-            progress_bar.progress((idx + 1) / total)
+        # Retry up to 3 times on failure
+        for attempt in range(3):
+            result = analyze_conversation(client, conversation, customer, staff, session_time)
+            if 'error' not in result or attempt == 2:
+                return idx, result
+            time.sleep(1 * (attempt + 1))
+        return idx, result
 
-        result = analyze_conversation(client, model, conversation, customer, staff, session_time)
-        results.append(result)
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(do_one, idx, row): idx for idx, row in df.iterrows()}
+        for future in as_completed(futures):
+            try:
+                idx, result = future.result()
+                results[idx] = result
+            except Exception as e:
+                with lock:
+                    error_count[0] += 1
+            with lock:
+                done_count[0] += 1
+                n = done_count[0]
+                errs = error_count[0]
+            progress_bar.progress(n / total)
+            if errs > 0:
+                status_text.text(f"🔍 已完成 {n}/{total}（{errs} 个错误）")
+            else:
+                status_text.text(f"🔍 已完成 {n}/{total}")
 
-        # Rate limiting
-        time.sleep(0.5)
-
-    return results
+    return [r for r in results if r is not None]
 
 
-def process_message_file(client, model, df, progress_bar=None, status_text=None):
-    """处理消息级Excel文件（每行一条消息，需按会话分组）"""
-    # Group by conversation (customer-employee pair on same date)
+def process_message_file(client, df, progress_bar, status_text):
+    """处理消息级Excel文件 — 10线程并发，带错误处理和限流重试"""
+    status_text.text("📦 正在按会话分组消息...")
     df['会话标识'] = df['日期'].astype(str) + '|' + df.apply(
         lambda r: r['发送人'] if r['是否员工'] != '是' else r['接收人'], axis=1
     )
 
-    results = []
     groups = list(df.groupby('会话标识'))
     total = len(groups)
+    status_text.text(f"📦 共分出 {total} 个会话，开始并发分析...")
 
-    for idx, (session_key, group) in enumerate(groups):
+    results = [None] * total
+    done_count = [0]
+    error_count = [0]
+    lock = threading.Lock()
+
+    def do_one(idx, session_key, group):
         date_str, customer = session_key.split('|', 1)
         staff_rows = group[group['是否员工'] == '是']
         staff = staff_rows['发送人'].iloc[0] if len(staff_rows) > 0 else 'unknown'
 
-        # Build conversation text
         lines = []
         for _, msg in group.iterrows():
             sender = str(msg['发送人'])
@@ -179,21 +164,38 @@ def process_message_file(client, model, df, progress_bar=None, status_text=None)
         conversation = '\n'.join(lines)
 
         if len(conversation.strip()) < 10:
-            continue
+            return idx, None
 
         if len(conversation) > 4000:
             conversation = conversation[:4000] + "\n...(对话过长已截断)"
 
-        if status_text:
-            status_text.text(f"正在分析 {idx + 1}/{total}: {customer}")
-        if progress_bar:
-            progress_bar.progress((idx + 1) / total)
+        for attempt in range(3):
+            result = analyze_conversation(client, conversation, customer, staff, date_str)
+            if 'error' not in result or attempt == 2:
+                return idx, result
+            time.sleep(1 * (attempt + 1))
+        return idx, result
 
-        result = analyze_conversation(client, model, conversation, customer, staff, date_str)
-        results.append(result)
-        time.sleep(0.5)
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(do_one, idx, key, grp): idx for idx, (key, grp) in enumerate(groups)}
+        for future in as_completed(futures):
+            try:
+                idx, result = future.result()
+                results[idx] = result
+            except Exception as e:
+                with lock:
+                    error_count[0] += 1
+            with lock:
+                done_count[0] += 1
+                n = done_count[0]
+                errs = error_count[0]
+            progress_bar.progress(n / total)
+            if errs > 0:
+                status_text.text(f"🔍 已完成 {n}/{total}（{errs} 个错误）")
+            else:
+                status_text.text(f"🔍 已完成 {n}/{total}")
 
-    return results
+    return [r for r in results if r is not None]
 
 
 def main():
@@ -201,27 +203,14 @@ def main():
     st.title("📊 客服对话 AI 分析工具")
     st.caption("使用 DeepSeek 分析客服聊天记录，提取采购意向、客户情绪等结构化数据")
 
-    # Sidebar config
-    with st.sidebar:
-        st.header("⚙️ 配置")
-        api_key = st.text_input("DeepSeek API Key", type="password",
-                                value=os.environ.get("DEEPSEEK_API_KEY", ""))
-        base_url = st.text_input("API Base URL", value="https://api.deepseek.com")
-        model = st.text_input("模型", value="deepseek-chat")
-        st.divider()
-        st.markdown("**数据格式说明**")
-        st.markdown("""
-        支持两种Excel格式：
-        - **会话级**：含"会话内容"或"有效对话"列
-        - **消息级**：含"消息内容"、"发送人"列
-        """)
-
     # File upload
-    uploaded_file = st.file_uploader("上传Excel文件", type=["xlsx", "xls"])
+    uploaded_file = st.file_uploader("上传Excel文件（支持会话级或消息级格式）", type=["xlsx", "xls"])
 
-    if uploaded_file and api_key:
-        df = pd.read_excel(uploaded_file, engine='openpyxl')
-        st.write(f"读取到 **{len(df)}** 行数据")
+    if uploaded_file:
+        with st.spinner("📖 正在读取Excel文件，请稍候..."):
+            df = pd.read_excel(uploaded_file, engine='openpyxl')
+
+        st.success(f"✅ 读取完成，共 **{len(df)}** 行数据")
         st.dataframe(df.head(3), use_container_width=True)
 
         # Detect file type
@@ -230,11 +219,11 @@ def main():
         is_message = '消息内容' in cols and '发送人' in cols
 
         if is_session:
-            st.info("检测到 **会话级** 格式（每行一个完整对话）")
+            st.info(f"检测到 **会话级** 格式（每行一个完整对话，共 {len(df)} 个会话）")
         elif is_message:
-            st.info("检测到 **消息级** 格式（每行一条消息）")
+            st.info("检测到 **消息级** 格式（每行一条消息，将自动按会话分组）")
         else:
-            st.error("无法识别文件格式，请检查列名")
+            st.error("无法识别文件格式，请检查列名是否包含[会话内容/有效对话]或[消息内容+发送人]")
             return
 
         # Row range selection
@@ -245,56 +234,48 @@ def main():
             end_row = st.number_input("结束行", min_value=1, max_value=len(df), value=min(len(df), 20))
 
         if st.button("🚀 开始分析", type="primary"):
-            client = OpenAI(api_key=api_key, base_url=base_url)
+            client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
             subset = df.iloc[start_row:end_row].copy().reset_index(drop=True)
 
-            progress_bar = st.progress(0)
+            st.divider()
             status_text = st.empty()
+            progress_bar = st.progress(0)
+            status_text.text(f"🚀 开始分析 {len(subset)} 条数据...")
 
             if is_session:
-                results = process_session_file(client, model, subset, progress_bar, status_text)
+                results = process_session_file(client, subset, progress_bar, status_text)
             else:
-                results = process_message_file(client, model, subset, progress_bar, status_text)
+                results = process_message_file(client, subset, progress_bar, status_text)
 
-            status_text.text("分析完成!")
+            status_text.text(f"✅ 分析完成！共处理 {len(results)} 个会话")
 
-            # Build result DataFrame
-            output_columns = [
-                '会话时间', '客户名', '员工名', '是否为企业购买', '是否为个人购买',
-                '聊天大意', '采购意向', '预算', '采购时间', '需求产品',
-                '客户顾虑', '销售方案', '客户情绪', '员工态度',
-                'Q1_采购时间计划', 'Q2_产品类型', 'Q3_核心用途',
-                'Q4_看重因素', 'Q5_预算区间', 'Q6_信息渠道'
-            ]
-
+            # Build result DataFrame — fixed 14 columns
             result_rows = []
             for r in results:
                 row = {}
-                for col in output_columns:
+                for col in OUTPUT_COLUMNS:
                     row[col] = r.get(col, 'none')
                 if 'error' in r:
                     row['聊天大意'] = f"[错误] {r['error']}"
                 result_rows.append(row)
 
-            result_df = pd.DataFrame(result_rows, columns=output_columns)
-            st.subheader("📋 分析结果")
+            result_df = pd.DataFrame(result_rows, columns=OUTPUT_COLUMNS)
+            st.subheader("📋 分析结果（固定14列）")
             st.dataframe(result_df, use_container_width=True, height=400)
 
-            # Download button
-            output_path = uploaded_file.name.replace('.xlsx', '_分析结果.xlsx').replace('.xls', '_分析结果.xlsx')
-            buffer = pd.ExcelWriter(f"/tmp/{output_path}", engine='openpyxl')
-            result_df.to_excel(buffer, index=False, sheet_name='分析结果')
-            buffer.close()
+            # Download
+            base_name = os.path.splitext(uploaded_file.name)[0]
+            output_name = f"{base_name}_分析结果.xlsx"
+            output_buf = io.BytesIO()
+            result_df.to_excel(output_buf, index=False, sheet_name='分析结果', engine='openpyxl')
+            output_buf.seek(0)
 
-            with open(f"/tmp/{output_path}", "rb") as f:
-                st.download_button(
-                    label="📥 下载分析结果",
-                    data=f.read(),
-                    file_name=output_path,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-    elif not api_key:
-        st.warning("请在侧边栏输入 DeepSeek API Key")
+            st.download_button(
+                label="📥 下载分析结果",
+                data=output_buf.getvalue(),
+                file_name=output_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
 
 if __name__ == "__main__":

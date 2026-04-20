@@ -13,6 +13,7 @@ venv/
 .vscode/
 *.swp
 *.swo
+*.spec
 *~
 .DS_Store
 Thumbs.db

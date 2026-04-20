@@ -7,6 +7,7 @@ AI-powered tools for B2B marketers. Download the `.exe`, double-click, done.
 | Tool | Description | Download | Status |
 |------|-------------|----------|--------|
 | [Cold Email Writer](cold-email-writer/) | Generate personalized cold emails in 3 styles | [Download .exe](https://github.com/wf2023impr/B2B-Marketing-AI-Tools/releases) | v1.0 |
+| [Chat Analyzer](chat-analyzer/) | AI analysis of customer service chats (DeepSeek) | [Download .exe](https://github.com/wf2023impr/B2B-Marketing-AI-Tools/releases) | v1.0 |
 | Company Researcher | Auto-research any company from its website | — | Planned |
 | LinkedIn Post Generator | Turn one article into 5 LinkedIn posts | — | Planned |
 | ICP Matcher | Score and rank prospect lists against your ICP | — | Planned |
